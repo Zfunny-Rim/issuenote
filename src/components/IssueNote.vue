@@ -41,17 +41,22 @@ export default {
         port: 443,
         isSecure: true
       },
+      accessToken: '',
 
       status: '',
       issueSummary: '', 
       textLength: 0, 
       qUserId: '',
       qKeyValue: '',
+      qSerialSn: '',
 
       appid: '',
       vUser: '',
       vKey: '',
       vContent: '',
+      vSerial: '',
+
+      qSeparator: ',',
     };
   },
   mounted() {
@@ -69,10 +74,12 @@ export default {
       this.vUser = arr[0];
       this.vKey = arr[1];
       this.vContent = arr[2];
+      this.vSerial = arr[3];
     }else{
       this.vUser = 'vUser';
       this.vKey = 'vKey';
       this.vContent = 'vContent';
+      this.vSerial = 'vSerial';
     }
     this.getToken();
   },
@@ -86,14 +93,19 @@ export default {
         alert('issueSummary is null')
         return;
       }
+      const contentValue = 'i'+this.qSeparator+this.qKeyValue+this.qSeparator+this.issueSummary;
       //set Qlik Variable
       const require = window.require;
       require( ["js/qlik"], ( qlik ) => {
         const app = qlik.openApp(this.appid, this.qlikConenctConfig);
-        app.variable.setStringValue(this.vContent, this.issueSummary); 
+        app.variable.setStringValue(this.vContent, contentValue)
+        .then(()=>{
+          app.doReload(0, true).then(()=>{app.doSave()});
+        }); 
       });
-      
-      //Call Save API
+
+      const basisYm = this.getBasisYm();
+      //Call Save API 
       try{
         fetch(process.env.VUE_APP_API_URL + "issueNote/save", {
           method: "POST",
@@ -102,8 +114,8 @@ export default {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            basisYm: "2024-08",
-            judgeBasisSn: "Test2",
+            basisYm: basisYm,
+            judgeBasisSn: this.qSerialSn,
             surrogateKeyCode: this.qKeyValue,
             progressStatusCode: this.status,
             issueSumDesc: this.issueSummary,
@@ -139,12 +151,13 @@ export default {
         }
         const data = await response.json();
         console.log('Data received:', data.accessToken);
-        this.fetchData(data.accessToken);
+        this.accessToken = data.accessToken;
+        this.fetchData();
       }catch(error){
         alert(error.message);
       }
     },
-    async fetchData(token) {
+    async fetchData() {
       try {
         const response = await fetch(process.env.VUE_APP_QLIK_URL 
         + 'qrs/about?xrfKey=1234567890abcdef',{
@@ -154,7 +167,7 @@ export default {
           headers: {
               'Content-Type' : 'application/json',
               'X-Qlik-xrfKey' : '1234567890abcdef',
-              'Authorization' : 'Bearer ' + token,
+              'Authorization' : 'Bearer ' + this.accessToken,
           },
         });
         if (!response.ok) {
@@ -209,6 +222,12 @@ export default {
           console.log("key : " + value);
           this.qKeyValue = value;
         });
+
+        app.variable.getContent(this.vSerial, ( reply ) => {
+          var value = reply.qContent.qString;
+          console.log("serial : " + value);
+          this.qSerialSn = value;
+        });
       });
     },
     getDetails(){
@@ -230,6 +249,15 @@ export default {
       }catch(error){
         alert(error.message);
       }
+    },
+    getBasisYm(){
+      var today = new Date();
+
+      var year = today.getFullYear();
+      var month = ('0' + (today.getMonth() + 1)).slice(-2);
+      var basisYm = year + '-' + month;
+
+      return basisYm;
     }
   }
 };
