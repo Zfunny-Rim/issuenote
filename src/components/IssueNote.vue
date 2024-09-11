@@ -1,5 +1,8 @@
 <template>
-  <div class="container">
+  <div v-if="isLoading" class="spinner-overlay">
+    <div class="spinner"></div>
+  </div>
+  <div v-else class="container">
     <div class="top-buttons">
       <button class="save-btn btn" @click="save">SAVE</button>
       <button class="close-btn btn" @click="close">X</button>
@@ -21,7 +24,11 @@
 
     <div class="section-title">Issue Summary</div>
     <div class="section-content">
-      <textarea id="issue-summary" v-model="issueSummary" placeholder="내용작성 (이슈칼럼임)" @input="updateTextLength"></textarea>
+      <textarea id="issue-summary" 
+      v-model="issueSummary" 
+      placeholder="내용작성 (이슈칼럼임)"
+      @input="updateTextLength"
+      maxlength="3000" ></textarea>
       <p class="max-text-length"><span>{{ textLength }}</span> / 3000자</p>
     </div>
 
@@ -41,6 +48,7 @@ export default {
         port: 443,
         isSecure: true
       },
+      isLoading: false,
       accessToken: '',
 
       status: '',
@@ -56,10 +64,10 @@ export default {
       vContent: '',
       vSerial: '',
 
-      qSeparator: ',',
+      qSeparator: '#qVar@',
     };
   },
-  mounted() {
+  created(){
     const urlSearch = new URLSearchParams(location.search)
     var appid = urlSearch.get('appid');
     var qvar = urlSearch.get('qvar');
@@ -81,9 +89,126 @@ export default {
       this.vContent = 'vContent';
       this.vSerial = 'vSerial';
     }
-    this.getToken();
+  },
+  mounted() {
+    this.initialize();
   },
   methods: {
+    async initialize(){
+      this.isLoading = true;
+      try{
+        await this.getToken();
+        await this.fetchData();
+        await this.loadExternalScript(process.env.VUE_APP_QLIK_URL 
+        + 'resources/assets/external/requirejs/require.js');
+        await this.afterScriptLoaded();
+      }catch(error){
+        console.error("Error during initialization:", error);
+      }finally{
+        this.isLoading = false;
+      }
+    },
+    async getToken(){
+      try{
+        const response = await fetch(process.env.VUE_APP_API_URL + 'jwt/getToken', {
+          method : 'GET'
+        });
+        if (!response.ok){
+          throw new Error(`Server error: ${response.status}`);
+        }
+        const data = await response.json();
+        console.log('Data received:', data.accessToken);
+        this.accessToken = data.accessToken;
+      }catch(error){
+        alert(error.message);
+      }
+    },
+    async fetchData() {
+      try {
+        const response = await fetch(process.env.VUE_APP_QLIK_URL 
+        + 'qrs/about?xrfKey=1234567890abcdef',{
+          method: 'GET',
+          mode: 'cors',
+          credentials: 'include',
+          headers: {
+              'Content-Type' : 'application/json',
+              'X-Qlik-xrfKey' : '1234567890abcdef',
+              'Authorization' : 'Bearer ' + this.accessToken,
+          },
+        });
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status}`);
+        }
+        const data = await response.json();
+        console.log('Data received:', data);
+      } catch (error) {
+        this.error = error.message;
+      }
+    },
+    async loadExternalScript(src) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    },
+    async afterScriptLoaded() {
+      const require = window.require;
+
+      // Qlik API의 require.js 설정
+      require.config({
+        baseUrl: (this.qlikConenctConfig.isSecure ? "https://" : "http://")
+          + this.qlikConenctConfig.host
+          + (this.qlikConenctConfig.port ? ":" + this.qlikConenctConfig.port : "")
+          + this.qlikConenctConfig.prefix + "resources"
+      });
+
+      return new Promise((resolve, reject) => {
+        // 외부 스크립트를 로드한 후 qlik 모듈 가져오기
+        require(["js/qlik"], (qlik) => {
+          qlik.on("error", (error) => {
+            console.log("error :" + error.message);
+            reject(error); // 에러 발생 시 reject 호출
+          });
+
+          console.log('appID ::: ' + this.appid);
+
+          // Qlik App 연결
+          const app = qlik.openApp(this.appid, this.qlikConenctConfig);
+
+          // 첫 번째 변수 가져오기 및 평가
+          app.variable.getContent(this.vUser, (reply) => {
+            const qFormula = reply.qContent.qString;
+            app.model.enigmaModel.evaluate(qFormula).then(value => {
+              console.log("userID : " + value);
+              this.qUserId = value;
+
+              // 두 번째 변수 가져오기
+              app.variable.getContent(this.vKey, (reply) => {
+                const keyValue = reply.qContent.qString;
+                console.log("key : " + keyValue);
+                this.qKeyValue = keyValue;
+
+                // 세 번째 변수 가져오기
+                app.variable.getContent(this.vSerial, (reply) => {
+                  const serialValue = reply.qContent.qString;
+                  console.log("serial : " + serialValue);
+                  this.qSerialSn = serialValue;
+
+                  // 모든 작업이 완료되었을 때 resolve 호출
+                  resolve();
+                });
+              });
+            }).catch(err => {
+              console.error("Error evaluating qUserId:", err);
+              reject(err); // 에러 발생 시 reject 호출
+            });
+          });
+        });
+      });
+    },
     save() {
       if(!this.status){
         alert('Status is null')
@@ -141,96 +266,8 @@ export default {
     updateTextLength() {
       this.textLength = this.issueSummary.length;
     },
-    async getToken(){
-      try{
-        const response = await fetch(process.env.VUE_APP_API_URL + 'jwt/getToken', {
-          method : 'GET'
-        });
-        if (!response.ok){
-          throw new Error(`Server error: ${response.status}`);
-        }
-        const data = await response.json();
-        console.log('Data received:', data.accessToken);
-        this.accessToken = data.accessToken;
-        this.fetchData();
-      }catch(error){
-        alert(error.message);
-      }
-    },
-    async fetchData() {
-      try {
-        const response = await fetch(process.env.VUE_APP_QLIK_URL 
-        + 'qrs/about?xrfKey=1234567890abcdef',{
-          method: 'GET',
-          mode: 'cors',
-          credentials: 'include',
-          headers: {
-              'Content-Type' : 'application/json',
-              'X-Qlik-xrfKey' : '1234567890abcdef',
-              'Authorization' : 'Bearer ' + this.accessToken,
-          },
-        });
-        if (!response.ok) {
-          throw new Error(`Server error: ${response.status}`);
-        }
-        const data = await response.json();
-        console.log('Data received:', data);
-
-        await this.loadExternalScript(process.env.VUE_APP_QLIK_URL 
-        + 'resources/assets/external/requirejs/require.js');
-
-        this.afterScriptLoaded();
-      } catch (error) {
-        this.error = error.message;
-      }
-    },
-    loadExternalScript(src) {
-      return new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = src;
-        script.onload = resolve;
-        script.onerror = reject;
-        document.head.appendChild(script);
-      });
-    },
-    afterScriptLoaded() {
-      const require = window.require;
-      require.config( {
-        baseUrl: ( this.qlikConenctConfig.isSecure ? "https://" : "http://" ) 
-        + this.qlikConenctConfig.host 
-        + (this.qlikConenctConfig.port ? ":" + this.qlikConenctConfig.port : "") 
-        + this.qlikConenctConfig.prefix + "resources"
-      } )
-      require( ["js/qlik"], ( qlik ) => {
-        qlik.on( "error",( error ) => {
-          console.log("error :" + error.message);
-        });
-
-        console.log('appID ::: ' + this.appid);
-
-        var app = qlik.openApp(this.appid, this.qlikConenctConfig);
-        app.variable.getContent(this.vUser, ( reply ) => {
-          var qFormula = reply.qContent.qString;
-          app.model.enigmaModel.evaluate(qFormula).then(value => {
-              console.log("userID : " + value);
-              this.qUserId = value;
-          });
-        });
-
-        app.variable.getContent(this.vKey, ( reply ) => {
-          var value = reply.qContent.qString;
-          console.log("key : " + value);
-          this.qKeyValue = value;
-        });
-
-        app.variable.getContent(this.vSerial, ( reply ) => {
-          var value = reply.qContent.qString;
-          console.log("serial : " + value);
-          this.qSerialSn = value;
-        });
-      });
-    },
     getDetails(){
+      const basisYm = this.getBasisYm();
       try{
         fetch(process.env.VUE_APP_API_URL + "issueNote/detail", {
         method: "POST",
@@ -239,9 +276,9 @@ export default {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          basisYm: "Test1",
-          judgeBasisSn: "Test2",
-          surrogateKeyCode: "Test3"
+          basisYm: basisYm,
+          judgeBasisSn: this.qSerialSn,
+          surrogateKeyCode: this.qKeyValue,
         }),
       })
       .then((response) => response.json())
@@ -264,6 +301,33 @@ export default {
 </script>
 
 <style scoped>
+.spinner-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+}
+
+.spinner {
+  border: 16px solid #f3f3f3;
+  border-top: 16px solid #3498db;
+  border-radius: 50%;
+  width: 120px;
+  height: 120px;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 body {
     font-family: Arial, sans-serif;
     margin: 20px;
@@ -292,7 +356,6 @@ body {
     margin-bottom: 10px;
     font-weight: bold;
 }
-
 .section-content {
     margin-bottom: 20px;
 }
